@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Clipboard Bridge"
+description = "A fast single-page clipboard dashboard for capturing text and images, creating temporary share rooms, and joining them from any device with an OTP or QR code."
+version = "1.0.0"
+id = "artifacts/clipboard-bridge"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19257
+
+[services.development]
+run = "pnpm --filter @workspace/clipboard-bridge run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/clipboard-bridge", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/clipboard-bridge/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19257"
+BASE_PATH = "/"
