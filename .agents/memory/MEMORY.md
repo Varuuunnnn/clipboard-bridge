@@ -1,0 +1,1 @@
+- [Generated UI scaffold audits](generated-ui-scaffold-audits.md) — Use import reachability and bundle output to distinguish live components from template residue before deleting scaffolding.
