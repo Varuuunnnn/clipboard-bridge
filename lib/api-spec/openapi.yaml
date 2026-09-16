@@ -1,0 +1,204 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: clipboard
+    description: Temporary clipboard sharing rooms
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /clipboard/rooms:
+    post:
+      operationId: createClipboardRoom
+      tags: [clipboard]
+      summary: Create a temporary clipboard room
+      responses:
+        "201":
+          description: Room created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClipboardRoom"
+  /clipboard/rooms/join:
+    post:
+      operationId: joinClipboardRoom
+      tags: [clipboard]
+      summary: Join a clipboard room with an OTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClipboardJoinInput"
+      responses:
+        "200":
+          description: Joined room
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClipboardRoom"
+        "404":
+          description: Room not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /clipboard/rooms/{roomId}:
+    get:
+      operationId: getClipboardRoom
+      tags: [clipboard]
+      summary: Get the latest clipboard room state
+      parameters:
+        - $ref: "#/components/parameters/RoomId"
+      responses:
+        "200":
+          description: Current room state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClipboardRoom"
+        "404":
+          description: Room not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /clipboard/rooms/{roomId}/items:
+    post:
+      operationId: addClipboardItem
+      tags: [clipboard]
+      summary: Add a text or image item to a room
+      parameters:
+        - $ref: "#/components/parameters/RoomId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClipboardItemInput"
+      responses:
+        "201":
+          description: Item added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClipboardItem"
+        "404":
+          description: Room not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: clearClipboardItems
+      tags: [clipboard]
+      summary: Clear all items in a room
+      parameters:
+        - $ref: "#/components/parameters/RoomId"
+      responses:
+        "204":
+          description: Items cleared
+        "404":
+          description: Room not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  parameters:
+    RoomId:
+      name: roomId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 8
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    ClipboardJoinInput:
+      type: object
+      required: [otp]
+      properties:
+        otp:
+          type: string
+          pattern: "^[0-9]{6}$"
+    ClipboardItemInput:
+      type: object
+      required: [kind, content]
+      properties:
+        kind:
+          type: string
+          enum: [text, image, document]
+        content:
+          type: string
+          minLength: 1
+          maxLength: 8000000
+        name:
+          type: ["string", "null"]
+          maxLength: 200
+    ClipboardItem:
+      type: object
+      required: [id, kind, content, name, createdAt]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [text, image, document]
+        content:
+          type: string
+        name:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+    ClipboardRoom:
+      type: object
+      required: [roomId, otp, createdAt, expiresAt, items]
+      properties:
+        roomId:
+          type: string
+        otp:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClipboardItem"
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
