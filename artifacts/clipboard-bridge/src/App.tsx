@@ -1,8 +1,6 @@
-import { type ClipboardEvent, type FormEvent, useEffect, useRef, useState } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { type ClipboardEvent, type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { Toaster } from '@/components/ui/toaster';
-import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import {
   ArrowUpRight,
@@ -89,22 +87,32 @@ function Logo({ onClick }: { onClick?: () => void }) {
 
 function QrMark({ value }: { value: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [failed, setFailed] = useState(false);
+
   useEffect(() => {
     if (!canvasRef.current) return;
+    let active = true;
+    setFailed(false);
     void QRCode.toCanvas(canvasRef.current, value, {
       errorCorrectionLevel: 'M',
       margin: 1,
       width: 140,
       color: { dark: '#202637', light: '#fbfaf5' },
     }).then(() => {
+      if (!active) return;
       canvasRef.current?.style.setProperty('width', '100%', 'important');
       canvasRef.current?.style.setProperty('height', 'auto', 'important');
       canvasRef.current?.style.setProperty('max-width', '100%', 'important');
+    }).catch(() => {
+      if (active) setFailed(true);
     });
+    return () => {
+      active = false;
+    };
   }, [value]);
   return (
     <div className="grid min-w-0 max-w-full overflow-hidden aspect-square w-full place-items-center rounded-lg bg-[hsl(var(--card))] p-2" role="img" aria-label="QR join code" data-testid="qr-join-code">
-      <canvas ref={canvasRef} className="block !h-auto !w-full max-w-full rounded-[3px]" />
+      {failed ? <span className="px-2 text-center font-mono text-[9px] uppercase leading-4 text-[hsl(var(--muted-foreground))]">QR unavailable</span> : <canvas ref={canvasRef} className="block !h-auto !w-full max-w-full rounded-[3px]" />}
     </div>
   );
 }
@@ -193,14 +201,8 @@ function SetupPanel({ onRoom, initialOtp = '' }: { onRoom: (room: ClipboardRoom,
   );
 }
 
-function RoomHeader({ room, onLeave, remaining, role }: { room: ClipboardRoom; onLeave: () => void; remaining: string; role: SystemRole }) {
+function RoomHeader({ onLeave, remaining, role }: { onLeave: () => void; remaining: string; role: SystemRole }) {
   const [copied, setCopied] = useState('');
-  const shareUrl = `${window.location.origin}/?join=${room.otp}`;
-  const copy = async (value: string, label: string) => {
-    await navigator.clipboard?.writeText(value);
-    setCopied(label);
-    window.setTimeout(() => setCopied(''), 1800);
-  };
   return (
     <header className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card)/.72)] px-5 py-4 backdrop-blur-md sm:px-8">
       <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4">
@@ -211,7 +213,6 @@ function RoomHeader({ room, onLeave, remaining, role }: { room: ClipboardRoom; o
         </div>
       </div>
       {copied && <div className="mx-auto mt-3 max-w-[1440px] text-right font-mono text-[10px] uppercase tracking-[.12em] text-[hsl(var(--secondary-foreground))]" role="status" data-testid="status-copy-feedback"><Check className="mr-1 inline h-3.5 w-3.5" />{copied} copied</div>}
-      <div className="sr-only">{shareUrl}</div>
     </header>
   );
 }
@@ -240,13 +241,28 @@ function ShareCard({ room }: { room: ClipboardRoom }) {
   );
 }
 
-function CaptureCard({ roomId }: { roomId: string }) {
+function CaptureCard({ roomId, disabled = false }: { roomId: string; disabled?: boolean }) {
   const [text, setText] = useState('');
   const [name, setName] = useState('');
   const [notice, setNotice] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const addItem = useAddClipboardItem();
+  const queryClient = useQueryClient();
+  const roomQueryKey = getGetClipboardRoomQueryKey(roomId);
+
+  const updateRoomWithItem = (item: ApiClipboardItem) => {
+    queryClient.setQueryData(roomQueryKey, (old: ClipboardRoom | undefined) => {
+      if (!old) return old;
+      const items = old.items.some((existingItem) => existingItem.id === item.id)
+        ? old.items.map((existingItem) => existingItem.id === item.id ? item : existingItem)
+        : [...old.items, item];
+      return { ...old, items };
+    });
+    void queryClient.invalidateQueries({ queryKey: roomQueryKey });
+  };
+
   const pasteText = async () => {
+    if (disabled) return;
     try {
       const clipboardText = await navigator.clipboard?.readText();
       if (clipboardText) {
@@ -260,10 +276,11 @@ function CaptureCard({ roomId }: { roomId: string }) {
     }
   };
   const sendText = () => {
-    if (!text.trim()) return;
-    addItem.mutate({ roomId, data: { kind: 'text', content: text.trim(), name: name.trim() || undefined } }, { onSuccess: (item) => { queryClient.setQueryData(getGetClipboardRoomQueryKey(roomId), (old: ClipboardRoom | undefined) => old ? { ...old, items: [...old.items, item] } : old); setText(''); setName(''); setNotice('Text sent across'); window.setTimeout(() => setNotice(''), 1800); }, onError: (error) => { setNotice(getErrorMessage(error)); window.setTimeout(() => setNotice(''), 2600); } });
+    if (disabled || !text.trim()) return;
+    addItem.mutate({ roomId, data: { kind: 'text', content: text.trim(), name: name.trim() || undefined } }, { onSuccess: (item) => { updateRoomWithItem(item); setText(''); setName(''); setNotice('Text sent across'); window.setTimeout(() => setNotice(''), 1800); }, onError: (error) => { setNotice(getErrorMessage(error)); window.setTimeout(() => setNotice(''), 2600); } });
   };
   const readFile = (file: File) => {
+    if (disabled) return;
     const isImage = file.type.startsWith('image/');
     const isDocument = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.oasis.opendocument.text', 'text/plain', 'text/markdown', 'text/csv'].includes(file.type) || /\.(pdf|docx?|odt|txt|md|csv)$/i.test(file.name);
     if (!isImage && !isDocument) {
@@ -273,7 +290,7 @@ function CaptureCard({ roomId }: { roomId: string }) {
     }
     const reader = new FileReader();
     reader.onload = () => {
-      addItem.mutate({ roomId, data: { kind: isImage ? 'image' : 'document', content: String(reader.result), name: file.name } }, { onSuccess: (item) => { queryClient.setQueryData(getGetClipboardRoomQueryKey(roomId), (old: ClipboardRoom | undefined) => old ? { ...old, items: [...old.items, item] } : old); setNotice(isImage ? 'Image sent across' : 'Document sent across'); window.setTimeout(() => setNotice(''), 1800); }, onError: (error) => { setNotice(getErrorMessage(error)); window.setTimeout(() => setNotice(''), 2600); } });
+      addItem.mutate({ roomId, data: { kind: isImage ? 'image' : 'document', content: String(reader.result), name: file.name } }, { onSuccess: (item) => { updateRoomWithItem(item); setNotice(isImage ? 'Image sent across' : 'Document sent across'); window.setTimeout(() => setNotice(''), 1800); }, onError: (error) => { setNotice(getErrorMessage(error)); window.setTimeout(() => setNotice(''), 2600); } });
     };
     reader.readAsDataURL(file);
   };
@@ -282,10 +299,10 @@ function CaptureCard({ roomId }: { roomId: string }) {
     if (file) { event.preventDefault(); readFile(file); }
   };
   return (
-    <section className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 sm:p-6" data-testid="card-capture">
+     <section className={`rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 sm:p-6 ${disabled ? 'opacity-60' : ''}`} data-testid="card-capture">
       <div className="flex items-center justify-between gap-4"><div><div className="flex items-center gap-2"><span className="grid h-7 w-7 place-items-center rounded-lg bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))]"><Send className="h-3.5 w-3.5" /></span><h2 className="font-bold tracking-[-.025em]">Send something</h2></div><p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">Capture here, it lands everywhere else.</p></div>{notice && <span className="font-mono text-[10px] uppercase tracking-[.1em] text-[hsl(var(--secondary-foreground))]" role="status" data-testid="status-send-feedback"><Check className="mr-1 inline h-3.5 w-3.5" />{notice}</span>}</div>
-      <textarea value={text} onChange={(event) => setText(event.target.value)} onPaste={onPaste} placeholder="Paste or type text here…" rows={4} className="focus-ring mt-5 w-full resize-none rounded-xl border border-[hsl(var(--input))] bg-[hsl(var(--background))] p-4 text-sm leading-6 outline-none placeholder:text-[hsl(var(--muted-foreground)/.6)]" data-testid="textarea-capture-text" />
-       <div className="mt-3 flex flex-wrap items-center gap-2"><input value={name} onChange={(event) => setName(event.target.value.slice(0, 200))} placeholder="Optional label" className="focus-ring min-w-[130px] flex-1 rounded-lg border border-transparent bg-[hsl(var(--muted)/.7)] px-3 py-2 text-xs outline-none placeholder:text-[hsl(var(--muted-foreground))]" data-testid="input-item-name" /><button type="button" onClick={pasteText} className="focus-ring flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-xs font-bold hover:bg-[hsl(var(--secondary))]" data-testid="button-paste-clipboard"><Clipboard className="h-3.5 w-3.5" /> Paste</button><button type="button" onClick={() => fileRef.current?.click()} className="focus-ring flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-xs font-bold hover:bg-[hsl(var(--secondary))]" data-testid="button-upload-file"><Upload className="h-3.5 w-3.5" /> File</button><input ref={fileRef} type="file" accept="image/*,.pdf,.doc,.docx,.odt,.txt,.md,.csv" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) readFile(file); event.target.value = ''; }} data-testid="input-file" /><button type="button" onClick={sendText} disabled={!text.trim() || addItem.isPending} className="focus-ring flex items-center gap-2 rounded-lg bg-[hsl(var(--primary))] px-4 py-2 text-xs font-bold text-[hsl(var(--primary-foreground))] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40" data-testid="button-send-text">{addItem.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ArrowUpRight className="h-3.5 w-3.5" />} Send</button></div>
+       <textarea disabled={disabled} value={text} onChange={(event) => setText(event.target.value)} onPaste={onPaste} placeholder={disabled ? 'This bridge has expired' : 'Paste or type text here…'} rows={4} className="focus-ring mt-5 w-full resize-none rounded-xl border border-[hsl(var(--input))] bg-[hsl(var(--background))] p-4 text-sm leading-6 outline-none placeholder:text-[hsl(var(--muted-foreground)/.6)] disabled:cursor-not-allowed" data-testid="textarea-capture-text" />
+        <div className="mt-3 flex flex-wrap items-center gap-2"><input disabled={disabled} value={name} onChange={(event) => setName(event.target.value.slice(0, 200))} placeholder="Optional label" className="focus-ring min-w-[130px] flex-1 rounded-lg border border-transparent bg-[hsl(var(--muted)/.7)] px-3 py-2 text-xs outline-none placeholder:text-[hsl(var(--muted-foreground))] disabled:cursor-not-allowed" data-testid="input-item-name" /><button type="button" onClick={pasteText} disabled={disabled} className="focus-ring flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-xs font-bold hover:bg-[hsl(var(--secondary))] disabled:cursor-not-allowed disabled:opacity-40" data-testid="button-paste-clipboard"><Clipboard className="h-3.5 w-3.5" /> Paste</button><button type="button" onClick={() => fileRef.current?.click()} disabled={disabled} className="focus-ring flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-xs font-bold hover:bg-[hsl(var(--secondary))] disabled:cursor-not-allowed disabled:opacity-40" data-testid="button-upload-file"><Upload className="h-3.5 w-3.5" /> File</button><input ref={fileRef} disabled={disabled} type="file" accept="image/*,.pdf,.doc,.docx,.odt,.txt,.md,.csv" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) readFile(file); event.target.value = ''; }} data-testid="input-file" /><button type="button" onClick={sendText} disabled={disabled || !text.trim() || addItem.isPending} className="focus-ring flex items-center gap-2 rounded-lg bg-[hsl(var(--primary))] px-4 py-2 text-xs font-bold text-[hsl(var(--primary-foreground))] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40" data-testid="button-send-text">{addItem.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ArrowUpRight className="h-3.5 w-3.5" />} Send</button></div>
     </section>
   );
 }
@@ -330,6 +347,7 @@ function LoadingItems() {
 function Dashboard({ initialRoom, onLeave, role }: { initialRoom: ClipboardRoom; onLeave: () => void; role: SystemRole }) {
   const [remaining, setRemaining] = useState(formatRemaining(initialRoom.expiresAt));
   const roomId = initialRoom.roomId;
+  const queryClient = useQueryClient();
   const roomQuery = useGetClipboardRoom(roomId, { query: { queryKey: getGetClipboardRoomQueryKey(roomId), refetchInterval: 5000 } });
   const clearItems = useClearClipboardItems();
   const room = roomQuery.data || initialRoom;
@@ -343,18 +361,18 @@ function Dashboard({ initialRoom, onLeave, role }: { initialRoom: ClipboardRoom;
   }, [initialRoom, roomId]);
   const items = [...(room.items || [])].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const clear = () => {
-    if (!items.length || clearItems.isPending) return;
+    if (expired || !items.length || clearItems.isPending) return;
     clearItems.mutate({ roomId }, { onSuccess: () => queryClient.setQueryData(getGetClipboardRoomQueryKey(roomId), (old: ClipboardRoom | undefined) => old ? { ...old, items: [] } : old) });
   };
   return (
     <div className="noise min-h-[100dvh] bg-[hsl(var(--background))] text-[hsl(var(--foreground))]">
-      <RoomHeader room={room} onLeave={onLeave} remaining={remaining} role={role} />
+      <RoomHeader onLeave={onLeave} remaining={remaining} role={role} />
       <main className="mx-auto grid max-w-[1440px] gap-6 px-5 py-7 sm:px-8 lg:grid-cols-[minmax(0,1fr)_330px] lg:gap-8 lg:py-10">
         <div className="min-w-0">
           <div className="mb-7 flex flex-wrap items-end justify-between gap-3"><div><p className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">your shared shelf</p><h1 className="mt-2 text-3xl font-extrabold tracking-[-.06em] sm:text-4xl">Ready when you are.</h1></div><div className="flex items-center gap-2 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card)/.6)] px-3 py-2 text-[11px] font-semibold text-[hsl(var(--muted-foreground))]"><Wifi className="h-3.5 w-3.5 text-[hsl(var(--secondary-foreground))]" /> syncing every few seconds</div></div>
           {expired && <div className="mb-5 flex items-center justify-between gap-4 rounded-xl border border-[hsl(var(--destructive)/.3)] bg-[hsl(var(--destructive)/.08)] p-4 text-sm" role="alert" data-testid="status-room-expired"><span className="flex items-center gap-2 text-[hsl(var(--destructive))]"><Clock3 className="h-4 w-4" /> This bridge has expired. Create a new one to continue.</span><button type="button" onClick={onLeave} className="font-bold underline underline-offset-2" data-testid="button-create-new-room">New room</button></div>}
-          <CaptureCard roomId={roomId} />
-          <div className="mt-10 flex items-center justify-between"><div><h2 className="text-lg font-bold tracking-[-.03em]">Recent handoffs <span className="ml-1 font-mono text-xs font-normal text-[hsl(var(--muted-foreground))]">{items.length}</span></h2><p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Latest first · visible to everyone in this room</p></div><button type="button" onClick={clear} disabled={!items.length || clearItems.isPending} className="focus-ring flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))] hover:text-[hsl(var(--destructive))] disabled:cursor-not-allowed disabled:opacity-40" data-testid="button-clear-items">{clearItems.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Clear all</button></div>
+           <CaptureCard roomId={roomId} disabled={expired} />
+           <div className="mt-10 flex items-center justify-between"><div><h2 className="text-lg font-bold tracking-[-.03em]">Recent handoffs <span className="ml-1 font-mono text-xs font-normal text-[hsl(var(--muted-foreground))]">{items.length}</span></h2><p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Latest first · visible to everyone in this room</p></div><button type="button" onClick={clear} disabled={expired || !items.length || clearItems.isPending} className="focus-ring flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))] hover:text-[hsl(var(--destructive))] disabled:cursor-not-allowed disabled:opacity-40" data-testid="button-clear-items">{clearItems.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Clear all</button></div>
           <div className="mt-4 space-y-3">{roomQuery.isLoading ? <LoadingItems /> : roomQuery.isError ? <div className="flex items-center justify-between rounded-2xl border border-[hsl(var(--destructive)/.25)] bg-[hsl(var(--card))] p-5 text-sm" data-testid="status-room-fetch-error"><span className="flex items-center gap-2"><CloudOff className="h-4 w-4 text-[hsl(var(--destructive))]" /> Could not refresh this room.</span><button type="button" onClick={() => roomQuery.refetch()} className="flex items-center gap-2 font-bold text-[hsl(var(--primary))]" data-testid="button-retry-room"><RefreshCw className="h-3.5 w-3.5" /> Retry</button></div> : items.length ? items.map((item) => <ItemCard item={item} key={item.id} />) : <EmptyItems />}</div>
         </div>
           <aside className="order-first lg:order-none lg:pt-[74px]"><ShareCard room={room} /></aside>
@@ -376,8 +394,12 @@ function Home() {
   const onRoom = (nextRoom: ClipboardRoom, nextRole: SystemRole) => {
     setRoom(nextRoom);
     setRole(nextRole);
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(nextRoom));
-    sessionStorage.setItem(ROLE_STORAGE_KEY, nextRole);
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(nextRoom));
+      sessionStorage.setItem(ROLE_STORAGE_KEY, nextRole);
+    } catch {
+      // The active room stays available in memory if storage is unavailable.
+    }
     setLocation('/');
   };
   const leave = () => {
@@ -391,8 +413,6 @@ function Home() {
 
 function Router() {
   return (
-    // Keep a shared shell (sidebar, navbar) outside the boundary so it
-    // survives a page crash.
     <RoutedErrorBoundary>
       <Switch>
         <Route path="/" component={Home} />
@@ -402,7 +422,7 @@ function Router() {
   );
 }
 
-function RoutedErrorBoundary({ children }: { children: import('react').ReactNode }) {
+function RoutedErrorBoundary({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   return <ErrorBoundary resetKey={location}>{children}</ErrorBoundary>;
 }
@@ -410,12 +430,9 @@ function RoutedErrorBoundary({ children }: { children: import('react').ReactNode
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-          <Router />
-        </WouterRouter>
-        <Toaster />
-      </TooltipProvider>
+      <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+        <Router />
+      </WouterRouter>
     </QueryClientProvider>
   );
 }
